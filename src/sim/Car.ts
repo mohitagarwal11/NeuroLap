@@ -28,7 +28,7 @@ export class Car {
   readonly steerRampRate = 6;
   readonly steerReturnRate = 9;
 
-  constructor(x: number, y: number, width = 15, length = 30) {
+  constructor(x: number, y: number, width = 17, length = 35) {
     this.x = x;
     this.y = y;
     this.width = width;
