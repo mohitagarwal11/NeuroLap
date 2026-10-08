@@ -9,6 +9,11 @@ export type TrackState = (typeof TrackState)[keyof typeof TrackState];
 
 export type Point = { x: number; y: number };
 export type WallSegment = { from: Point; to: Point };
+export type LapStats = {
+  currentLapMs: number;
+  lapHistoryMs: readonly number[];
+  bestLapMs: number | undefined;
+};
 
 /** A closed road built from a user-drawn centerline. */
 export class Track {
@@ -20,6 +25,12 @@ export class Track {
   private centerline: Point[] = [];
   private leftWalls: WallSegment[] = [];
   private rightWalls: WallSegment[] = [];
+  private startFinish: WallSegment | undefined;
+  private hasLeftStartLine = false;
+  private lapStartTime: number | undefined;
+  private lapStoppedTime: number | undefined;
+  private lapHistoryMs: number[] = [];
+  private bestLapMs: number | undefined;
 
   constructor(carWidth: number) {
     this.roadWidth = carWidth * 6;
@@ -32,6 +43,8 @@ export class Track {
     this.centerline = [];
     this.leftWalls = [];
     this.rightWalls = [];
+    this.startFinish = undefined;
+    this.resetLapData();
     this.message = "Draw a loop, then release close to its start.";
   }
 
@@ -74,6 +87,8 @@ export class Track {
         "Corner too tight or track too close to itself. Draw a wider loop.";
       return false;
     }
+    this.buildStartFinishLine();
+    this.resetLapData();
     this.state = TrackState.READY;
     this.message = "Track ready — press W to drive.";
     return true;
@@ -94,14 +109,56 @@ export class Track {
     if (this.state !== TrackState.READY || this.centerline.length < 2)
       return undefined;
     this.state = TrackState.DRIVING;
+    this.hasLeftStartLine = false;
+    this.lapStartTime = undefined;
+    this.lapStoppedTime = undefined;
     this.message = "Driving — stay between the walls.";
     return this.centerline[0];
   }
 
-  crash(): void {
+  crash(timeMs: number): void {
     if (this.state !== TrackState.DRIVING) return;
     this.state = TrackState.CRASHED;
+    this.lapStoppedTime = timeMs;
     this.message = "Game over! Press R to restart, or draw a new track.";
+  }
+
+  recordRaceProgress(
+    previousPosition: Point,
+    currentPosition: Point,
+    speed: number,
+    timeMs: number,
+  ): void {
+    if (this.state !== TrackState.DRIVING) return;
+    if (this.lapStartTime === undefined && Math.abs(speed) > 1) {
+      this.lapStartTime = timeMs;
+    }
+    if (this.lapStartTime === undefined) return;
+
+    if (!this.startFinish) return;
+    if (!this.hasLeftStartLine) {
+      if (this.distanceToSegment(currentPosition, this.startFinish) > this.roadWidth / 4) {
+        this.hasLeftStartLine = true;
+      }
+      return;
+    }
+
+    if (this.segmentsIntersect(previousPosition, currentPosition, this.startFinish.from, this.startFinish.to)) {
+      const lapTime = timeMs - this.lapStartTime;
+      this.lapHistoryMs.push(lapTime);
+      this.bestLapMs = Math.min(this.bestLapMs ?? Number.POSITIVE_INFINITY, lapTime);
+      this.lapStartTime = timeMs;
+      this.hasLeftStartLine = false;
+    }
+  }
+
+  getLapStats(timeMs: number): LapStats {
+    const endTime = this.lapStoppedTime ?? timeMs;
+    return {
+      currentLapMs: this.lapStartTime === undefined ? 0 : Math.max(0, endTime - this.lapStartTime),
+      lapHistoryMs: this.lapHistoryMs,
+      bestLapMs: this.bestLapMs,
+    };
   }
 
   collidesWithBody(corners: readonly Point[]): boolean {
@@ -155,6 +212,7 @@ export class Track {
 
     this.drawWalls(context, this.leftWalls);
     this.drawWalls(context, this.rightWalls);
+    this.drawStartFinishLine(context);
     const start = this.points[0] ?? this.centerline[0];
     if (start) {
       context.fillStyle = "#4ade80";
@@ -178,6 +236,17 @@ export class Track {
     }
   }
 
+  private drawStartFinishLine(context: CanvasRenderingContext2D): void {
+    if (this.startFinish) {
+      context.strokeStyle = "#f8fafc";
+      context.lineWidth = 6;
+      context.beginPath();
+      context.moveTo(this.startFinish.from.x, this.startFinish.from.y);
+      context.lineTo(this.startFinish.to.x, this.startFinish.to.y);
+      context.stroke();
+    }
+  }
+
   private pointIsInsideBody(point: Point, corners: readonly Point[]): boolean {
     let hasPositiveSide = false;
     let hasNegativeSide = false;
@@ -192,6 +261,21 @@ export class Track {
       if (hasPositiveSide && hasNegativeSide) return false;
     }
     return true;
+  }
+
+  private distanceToSegment(point: Point, segment: WallSegment): number {
+    const dx = segment.to.x - segment.from.x;
+    const dy = segment.to.y - segment.from.y;
+    const lengthSquared = dx * dx + dy * dy;
+    if (lengthSquared === 0) return Math.hypot(point.x - segment.from.x, point.y - segment.from.y);
+    const projection = Math.max(
+      0,
+      Math.min(1, ((point.x - segment.from.x) * dx + (point.y - segment.from.y) * dy) / lengthSquared),
+    );
+    return Math.hypot(
+      point.x - (segment.from.x + dx * projection),
+      point.y - (segment.from.y + dy * projection),
+    );
   }
 
   private buildWalls(): boolean {
@@ -224,6 +308,18 @@ export class Track {
     this.leftWalls = this.toSegments(left);
     this.rightWalls = this.toSegments(right);
     return true;
+  }
+
+  private buildStartFinishLine(): void {
+    this.startFinish = { from: this.leftWalls[0].from, to: this.rightWalls[0].from };
+  }
+
+  private resetLapData(): void {
+    this.hasLeftStartLine = false;
+    this.lapStartTime = undefined;
+    this.lapStoppedTime = undefined;
+    this.lapHistoryMs = [];
+    this.bestLapMs = undefined;
   }
 
   private toSegments(points: Point[]): WallSegment[] {

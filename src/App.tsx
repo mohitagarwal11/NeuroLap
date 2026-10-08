@@ -49,6 +49,16 @@ function App() {
     );
     let frameId = 0;
     let previousTime: number | undefined;
+    let lastHudUpdate = Number.NEGATIVE_INFINITY;
+    let lapStats = track.getLapStats(0);
+
+    const formatLapTime = (milliseconds: number | undefined) => {
+      if (milliseconds === undefined) return "--:--.---";
+      const minutes = Math.floor(milliseconds / 60_000);
+      const seconds = Math.floor((milliseconds % 60_000) / 1_000);
+      const millis = Math.floor(milliseconds % 1_000);
+      return `${minutes}:${seconds.toString().padStart(2, "0")}.${millis.toString().padStart(3, "0")}`;
+    };
 
     const resizeCanvas = () => {
       const { width, height } = canvas.getBoundingClientRect();
@@ -68,6 +78,10 @@ function App() {
       context.font = "16px system-ui";
       context.fillText(track.message, 18, 30);
       context.fillText(`${gamepad.selectedGamepadLabel()} — press G to switch`, 18, 54);
+      context.fillText(`Lap ${formatLapTime(lapStats.currentLapMs)}`, 18, 78);
+      context.fillText(`Best ${formatLapTime(lapStats.bestLapMs)}`, 18, 102);
+      const history = lapStats.lapHistoryMs.slice(-3).map(formatLapTime).join("  ") || "—";
+      context.fillText(`Previous ${history}`, 18, 126);
       if (track.state === TrackState.DRIVING || track.state === TrackState.CRASHED) car.draw(context);
     };
 
@@ -76,8 +90,14 @@ function App() {
       previousTime = time;
       gamepad.update();
       if (track.state === TrackState.DRIVING) {
+        const previousPosition = { x: car.x, y: car.y };
         car.update(deltaSeconds);
-        if (track.collidesWithBody(car.getBodyCorners())) track.crash();
+        track.recordRaceProgress(previousPosition, { x: car.x, y: car.y }, car.speed, time);
+        if (track.collidesWithBody(car.getBodyCorners())) track.crash(time);
+      }
+      if (time - lastHudUpdate >= 250) {
+        lapStats = track.getLapStats(time);
+        lastHudUpdate = time;
       }
       render();
       frameId = requestAnimationFrame(tick);

@@ -12,18 +12,16 @@ export class Car {
   private appliedSteer = 0;
 
   // more downforce tuning right now for btr control in corners
-  readonly acceleration = 450;
-  readonly reverseAcceleration = 300;
-  readonly braking = 1_000;
-  readonly rollingResistance = 40;
+  readonly acceleration = 250;
+  readonly reverseAcceleration = 120;
+  readonly braking = 500;
+  readonly rollingResistance = 30;
   readonly aerodynamicDrag = 0.55;
-  readonly maxSpeed = 500;
-  readonly maxReverseSpeed = 150;
+  readonly maxSpeed = 300;
+  readonly maxReverseSpeed = 75;
   readonly wheelbase = 28;
   readonly maxSteerAngle = 0.5;
-  // Grip limit: caps sideways acceleration, so steering lock shrinks as speed
-  // rises (v^2 / radius). Raise for a grippier car, lower for a floatier one.
-  readonly maxLateralAccel = 1_000;
+  readonly maxLateralAccel = 500;
   readonly throttleRampRate = 3.5;
   readonly brakeRampRate = 8;
   readonly releaseRampRate = 5;
