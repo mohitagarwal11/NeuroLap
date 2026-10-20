@@ -63,8 +63,29 @@ export class Track {
       this.message = "Release near the green start marker to close the loop.";
       return false;
     }
-    if (this.points.length < 6 || this.loopLength(this.points) < 600) {
-      this.message = "Track is too short. Draw a longer loop.";
+    return this.complete();
+  }
+
+  /**
+   * Builds a track from an already-closed stroke. This lets callers validate a
+   * candidate without changing the track currently in use.
+   */
+  load(points: readonly Point[]): boolean {
+    this.state = TrackState.DRAWING;
+    this.points = points.map(({ x, y }) => ({ x, y }));
+    this.centerline = [];
+    this.leftWalls = [];
+    this.rightWalls = [];
+    this.startFinish = undefined;
+    this.resetLapData();
+    this.message = "Draw a loop, then release close to its start.";
+    return this.complete();
+  }
+
+  private complete(): boolean {
+    if (this.points.length < 3 || Math.abs(this.signedArea(this.points)) < 1) {
+      this.message =
+        "Track must enclose an area. Draw a closed loop, not a line.";
       return false;
     }
     if (this.hasSelfIntersection(this.points)) {
@@ -72,11 +93,10 @@ export class Track {
       return false;
     }
 
-    const resampled = this.resampleClosed(this.points, 24);
-    const averaged = this.smoothWithMovingAverage(resampled, 4);
-    const centerline = this.smoothClosed(averaged);
+    const centerline = this.resampleClosed(this.points, 12);
     if (this.hasSelfIntersection(centerline)) {
-      this.message = "Smoothing would cross this track. Try a wider loop.";
+      this.message =
+        "Track crosses itself. Figure-eight tracks are not supported.";
       return false;
     }
 
@@ -84,7 +104,7 @@ export class Track {
     if (!this.buildWalls()) {
       this.centerline = [];
       this.message =
-        "Corner too tight or track too close to itself. Draw a wider loop.";
+        "Road is too narrow here for walls to form a usable corridor.";
       return false;
     }
     this.buildStartFinishLine();
@@ -137,16 +157,29 @@ export class Track {
 
     if (!this.startFinish) return;
     if (!this.hasLeftStartLine) {
-      if (this.distanceToSegment(currentPosition, this.startFinish) > this.roadWidth / 4) {
+      if (
+        this.distanceToSegment(currentPosition, this.startFinish) >
+        this.roadWidth / 4
+      ) {
         this.hasLeftStartLine = true;
       }
       return;
     }
 
-    if (this.segmentsIntersect(previousPosition, currentPosition, this.startFinish.from, this.startFinish.to)) {
+    if (
+      this.segmentsIntersect(
+        previousPosition,
+        currentPosition,
+        this.startFinish.from,
+        this.startFinish.to,
+      )
+    ) {
       const lapTime = timeMs - this.lapStartTime;
       this.lapHistoryMs.push(lapTime);
-      this.bestLapMs = Math.min(this.bestLapMs ?? Number.POSITIVE_INFINITY, lapTime);
+      this.bestLapMs = Math.min(
+        this.bestLapMs ?? Number.POSITIVE_INFINITY,
+        lapTime,
+      );
       this.lapStartTime = timeMs;
       this.hasLeftStartLine = false;
     }
@@ -155,7 +188,10 @@ export class Track {
   getLapStats(timeMs: number): LapStats {
     const endTime = this.lapStoppedTime ?? timeMs;
     return {
-      currentLapMs: this.lapStartTime === undefined ? 0 : Math.max(0, endTime - this.lapStartTime),
+      currentLapMs:
+        this.lapStartTime === undefined
+          ? 0
+          : Math.max(0, endTime - this.lapStartTime),
       lapHistoryMs: this.lapHistoryMs,
       bestLapMs: this.bestLapMs,
     };
@@ -267,10 +303,15 @@ export class Track {
     const dx = segment.to.x - segment.from.x;
     const dy = segment.to.y - segment.from.y;
     const lengthSquared = dx * dx + dy * dy;
-    if (lengthSquared === 0) return Math.hypot(point.x - segment.from.x, point.y - segment.from.y);
+    if (lengthSquared === 0)
+      return Math.hypot(point.x - segment.from.x, point.y - segment.from.y);
     const projection = Math.max(
       0,
-      Math.min(1, ((point.x - segment.from.x) * dx + (point.y - segment.from.y) * dy) / lengthSquared),
+      Math.min(
+        1,
+        ((point.x - segment.from.x) * dx + (point.y - segment.from.y) * dy) /
+          lengthSquared,
+      ),
     );
     return Math.hypot(
       point.x - (segment.from.x + dx * projection),
@@ -279,10 +320,6 @@ export class Track {
   }
 
   private buildWalls(): boolean {
-    if (!this.hasAcceptableCurvature() || !this.hasAcceptableProximity()) {
-      return false;
-    }
-
     const left: Point[] = [];
     const right: Point[] = [];
     const halfWidth = this.roadWidth / 2;
@@ -305,13 +342,27 @@ export class Track {
         y: current.y - normalY * halfWidth,
       });
     }
-    this.leftWalls = this.toSegments(left);
-    this.rightWalls = this.toSegments(right);
+    const repairedLeft = this.repairWall(left);
+    const repairedRight = this.repairWall(right);
+    const leftWalls = this.toSegments(repairedLeft);
+    const rightWalls = this.toSegments(repairedRight);
+    if (
+      leftWalls.length < 3 ||
+      rightWalls.length < 3 ||
+      this.wallsIntersect(leftWalls, rightWalls)
+    ) {
+      return false;
+    }
+    this.leftWalls = leftWalls;
+    this.rightWalls = rightWalls;
     return true;
   }
 
   private buildStartFinishLine(): void {
-    this.startFinish = { from: this.leftWalls[0].from, to: this.rightWalls[0].from };
+    this.startFinish = {
+      from: this.leftWalls[0].from,
+      to: this.rightWalls[0].from,
+    };
   }
 
   private resetLapData(): void {
@@ -329,90 +380,116 @@ export class Track {
     }));
   }
 
-  private hasAcceptableCurvature(): boolean {
-    const sampleDistance = this.roadWidth / 2;
-    for (let index = 0; index < this.centerline.length; index += 1) {
-      const before = this.pointAtArcOffset(index, -1, sampleDistance);
-      const current = this.centerline[index];
-      const after = this.pointAtArcOffset(index, 1, sampleDistance);
-      if (this.circumradius(before, current, after) < sampleDistance)
-        return false;
+  /**
+   * Offset polylines can fold back on themselves at a tight turn. At a
+   * crossing there are two possible closed boundaries; retain the one with
+   * the larger enclosed area. This removes the small inward spur while
+   * preserving the full outside/inside wall around the circuit.
+   */
+  private repairWall(points: Point[]): Point[] {
+    let repaired = points.map((point) => ({ ...point }));
+    const trimmed = new Set<Point>();
+    for (
+      let pass = 0;
+      pass < points.length && repaired.length >= 3;
+      pass += 1
+    ) {
+      const crossing = this.firstWallIntersection(repaired);
+      if (!crossing) break;
+      const { first, second, point } = crossing;
+      const wrappingBoundary = [
+        ...repaired.slice(0, first + 1),
+        point,
+        ...repaired.slice(second + 1),
+      ];
+      const enclosedBoundary = [
+        point,
+        ...repaired.slice(first + 1, second + 1),
+      ];
+      repaired =
+        Math.abs(this.signedArea(wrappingBoundary)) >=
+        Math.abs(this.signedArea(enclosedBoundary))
+          ? wrappingBoundary
+          : enclosedBoundary;
+      trimmed.add(point);
     }
-    return true;
+    return this.bevelTrimmedCorners(repaired, trimmed);
   }
 
-  private hasAcceptableProximity(): boolean {
-    const edgeLengths = this.centerline.map((point, index) => {
-      const next = this.centerline[(index + 1) % this.centerline.length];
-      return Math.hypot(next.x - point.x, next.y - point.y);
-    });
-    const totalLength = edgeLengths.reduce(
-      (total, length) => total + length,
-      0,
-    );
-    const minimumArcDistance = this.roadWidth * 2;
-
-    for (let first = 0; first < this.centerline.length; first += 1) {
-      let forwardDistance = 0;
-      for (
-        let second = first + 1;
-        second < this.centerline.length;
-        second += 1
-      ) {
-        forwardDistance += edgeLengths[second - 1];
-        const arcDistance = Math.min(
-          forwardDistance,
-          totalLength - forwardDistance,
+  private firstWallIntersection(
+    points: readonly Point[],
+  ): { first: number; second: number; point: Point } | undefined {
+    for (let first = 0; first < points.length; first += 1) {
+      const firstEnd = (first + 1) % points.length;
+      for (let second = first + 1; second < points.length; second += 1) {
+        const secondEnd = (second + 1) % points.length;
+        if (first === second || firstEnd === second || secondEnd === first)
+          continue;
+        const point = this.properSegmentIntersection(
+          points[first],
+          points[firstEnd],
+          points[second],
+          points[secondEnd],
         );
-        const a = this.centerline[first];
-        const b = this.centerline[second];
-        if (
-          arcDistance > minimumArcDistance &&
-          Math.hypot(a.x - b.x, a.y - b.y) < this.roadWidth
-        ) {
-          return false;
-        }
+        if (point) return { first, second, point };
       }
     }
-    return true;
+    return undefined;
   }
 
-  private pointAtArcOffset(
-    index: number,
-    direction: -1 | 1,
-    distance: number,
-  ): Point {
-    let remaining = distance;
-    let currentIndex = index;
-    for (let step = 0; step < this.centerline.length; step += 1) {
-      const nextIndex =
-        (currentIndex + direction + this.centerline.length) %
-        this.centerline.length;
-      const current = this.centerline[currentIndex];
-      const next = this.centerline[nextIndex];
-      const segmentLength = Math.hypot(next.x - current.x, next.y - current.y);
-      if (segmentLength > 0 && remaining <= segmentLength) {
-        const t = remaining / segmentLength;
-        return {
-          x: current.x + (next.x - current.x) * t,
-          y: current.y + (next.y - current.y) * t,
-        };
+  private bevelTrimmedCorners(
+    points: readonly Point[],
+    trimmed: ReadonlySet<Point>,
+  ): Point[] {
+    const result: Point[] = [];
+    for (let index = 0; index < points.length; index += 1) {
+      const current = points[index];
+      if (!trimmed.has(current)) {
+        result.push(current);
+        continue;
       }
-      remaining -= segmentLength;
-      currentIndex = nextIndex;
+      const previous = points[(index - 1 + points.length) % points.length];
+      const next = points[(index + 1) % points.length];
+      const beforeLength = Math.hypot(
+        current.x - previous.x,
+        current.y - previous.y,
+      );
+      const afterLength = Math.hypot(next.x - current.x, next.y - current.y);
+      const inset = Math.min(
+        this.roadWidth * 0.12,
+        beforeLength / 3,
+        afterLength / 3,
+      );
+      if (inset <= 0.000_001) {
+        result.push(current);
+        continue;
+      }
+      result.push({
+        x: current.x + ((previous.x - current.x) / beforeLength) * inset,
+        y: current.y + ((previous.y - current.y) / beforeLength) * inset,
+      });
+      result.push({
+        x: current.x + ((next.x - current.x) / afterLength) * inset,
+        y: current.y + ((next.y - current.y) / afterLength) * inset,
+      });
     }
-    return this.centerline[currentIndex];
+    return result;
   }
 
-  private circumradius(a: Point, b: Point, c: Point): number {
-    const ab = Math.hypot(b.x - a.x, b.y - a.y);
-    const bc = Math.hypot(c.x - b.x, c.y - b.y);
-    const ca = Math.hypot(a.x - c.x, a.y - c.y);
-    const twiceArea = Math.abs(
-      (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x),
+  private wallsIntersect(
+    left: readonly WallSegment[],
+    right: readonly WallSegment[],
+  ): boolean {
+    return left.some((leftSegment) =>
+      right.some((rightSegment) =>
+        this.segmentsIntersect(
+          leftSegment.from,
+          leftSegment.to,
+          rightSegment.from,
+          rightSegment.to,
+        ),
+      ),
     );
-    if (twiceArea < 0.000_001) return Number.POSITIVE_INFINITY;
-    return (ab * bc * ca) / (2 * twiceArea);
   }
 
   private resampleClosed(points: Point[], spacing: number): Point[] {
@@ -441,57 +518,20 @@ export class Track {
     return samples;
   }
 
-  private smoothWithMovingAverage(points: Point[], passes: number): Point[] {
-    let result = points;
-    for (let pass = 0; pass < passes; pass += 1) {
-      result = result.map((point, index) => {
-        const previous = result[(index - 1 + result.length) % result.length];
-        const next = result[(index + 1) % result.length];
-        return {
-          x: (previous.x + point.x + next.x) / 3,
-          y: (previous.y + point.y + next.y) / 3,
-        };
-      });
-    }
-    return result;
-  }
-
-  private smoothClosed(points: Point[]): Point[] {
-    const result: Point[] = [];
-    const steps = 4;
-    for (let index = 0; index < points.length; index += 1) {
-      const p0 = points[(index - 1 + points.length) % points.length];
-      const p1 = points[index];
-      const p2 = points[(index + 1) % points.length];
-      const p3 = points[(index + 2) % points.length];
-      for (let step = 0; step < steps; step += 1) {
-        const t = step / steps;
-        const t2 = t * t;
-        const t3 = t2 * t;
-        result.push({
-          x:
-            0.5 *
-            (2 * p1.x +
-              (-p0.x + p2.x) * t +
-              (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 +
-              (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3),
-          y:
-            0.5 *
-            (2 * p1.y +
-              (-p0.y + p2.y) * t +
-              (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
-              (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3),
-        });
-      }
-    }
-    return result;
-  }
-
   private loopLength(points: Point[]): number {
     return points.reduce((total, point, index) => {
       const next = points[(index + 1) % points.length];
       return total + Math.hypot(next.x - point.x, next.y - point.y);
     }, 0);
+  }
+
+  private signedArea(points: readonly Point[]): number {
+    return (
+      points.reduce((area, point, index) => {
+        const next = points[(index + 1) % points.length];
+        return area + point.x * next.y - next.x * point.y;
+      }, 0) / 2
+    );
   }
 
   private hasSelfIntersection(points: Point[]): boolean {
@@ -513,6 +553,28 @@ export class Track {
       }
     }
     return false;
+  }
+
+  private properSegmentIntersection(
+    a: Point,
+    b: Point,
+    c: Point,
+    d: Point,
+  ): Point | undefined {
+    const abX = b.x - a.x;
+    const abY = b.y - a.y;
+    const cdX = d.x - c.x;
+    const cdY = d.y - c.y;
+    const denominator = abX * cdY - abY * cdX;
+    if (Math.abs(denominator) < 0.000_001) return undefined;
+    const acX = c.x - a.x;
+    const acY = c.y - a.y;
+    const t = (acX * cdY - acY * cdX) / denominator;
+    const u = (acX * abY - acY * abX) / denominator;
+    const epsilon = 0.000_001;
+    if (t <= epsilon || t >= 1 - epsilon || u <= epsilon || u >= 1 - epsilon)
+      return undefined;
+    return { x: a.x + abX * t, y: a.y + abY * t };
   }
 
   private segmentsIntersect(a: Point, b: Point, c: Point, d: Point): boolean {

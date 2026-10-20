@@ -1,6 +1,115 @@
-.game-canvas {
-  display: block;
+.game-shell {
   width: 100vw;
   height: 100vh;
+  position: relative;
+  overflow: hidden;
+}
+
+.game-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.new-track-button,
+.track-editor-actions button {
+  border: 1px solid #475569;
+  border-radius: 0.5rem;
+  background: #1e293b;
+  color: #f8fafc;
+  font: inherit;
+  cursor: pointer;
+}
+
+.new-track-button {
+  position: absolute;
+  z-index: 1;
+  top: 1rem;
+  right: 1rem;
+  padding: 0.6rem 0.85rem;
+  box-shadow: 0 8px 20px rgb(0 0 0 / 0.25);
+}
+
+.new-track-button:hover,
+.track-editor-actions button:hover {
+  background: #334155;
+}
+
+.track-editor-backdrop {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgb(2 6 23 / 0.72);
+}
+
+.track-editor {
+  box-sizing: border-box;
+  width: min(42rem, 100%);
+  height: min(32rem, calc(100vh - 2rem));
+  min-height: 20rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 1rem;
+  border: 1px solid #475569;
+  border-radius: 0.85rem;
+  background: #1e293b;
+  box-shadow: 0 24px 64px rgb(0 0 0 / 0.45);
+  color: #e2e8f0;
+}
+
+.track-editor-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.track-editor h1,
+.track-editor p {
+  margin: 0;
+}
+
+.track-editor h1 {
+  font-size: 1.1rem;
+}
+
+.track-editor p {
+  margin-top: 0.25rem;
+  color: #cbd5e1;
+  font-size: 0.875rem;
+}
+
+.track-editor-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex: none;
+}
+
+.track-editor-actions button {
+  padding: 0.45rem 0.65rem;
+}
+
+.track-editor-canvas {
+  min-height: 0;
+  flex: 1;
+  width: 100%;
+  border: 1px solid #475569;
+  border-radius: 0.5rem;
   cursor: crosshair;
+  touch-action: none;
+}
+
+@media (max-width: 32rem) {
+  .track-editor {
+    padding: 0.75rem;
+  }
+
+  .track-editor-header {
+    flex-direction: column;
+    gap: 0.6rem;
+  }
 }
