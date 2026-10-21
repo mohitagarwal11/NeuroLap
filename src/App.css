@@ -12,7 +12,8 @@
 }
 
 .new-track-button,
-.track-editor-actions button {
+.track-editor-actions button,
+.ai-controls button {
   border: 1px solid #475569;
   border-radius: 0.5rem;
   background: #1e293b;
@@ -31,8 +32,84 @@
 }
 
 .new-track-button:hover,
-.track-editor-actions button:hover {
+.track-editor-actions button:hover,
+.ai-controls button:hover {
   background: #334155;
+}
+
+.ai-controls {
+  position: absolute;
+  z-index: 1;
+  bottom: 1rem;
+  left: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  max-width: 22rem;
+  color: #e2e8f0;
+}
+
+.ai-controls button {
+  padding: 0.45rem 0.65rem;
+}
+
+.ai-controls p {
+  width: 100%;
+  margin: 0.15rem 0 0;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid #475569;
+  border-radius: 0.45rem;
+  background: rgb(15 23 42 / 0.88);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.ai-settings {
+  position: absolute;
+  z-index: 2;
+  bottom: 7.5rem;
+  left: 1rem;
+  width: min(17rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 9rem);
+  overflow: auto;
+  box-sizing: border-box;
+  padding: 0.8rem;
+  border: 1px solid #475569;
+  border-radius: 0.65rem;
+  background: #1e293b;
+  color: #e2e8f0;
+  box-shadow: 0 12px 30px rgb(0 0 0 / 0.3);
+}
+
+.ai-settings h2 {
+  margin: 0 0 0.7rem;
+  font-size: 1rem;
+}
+
+.ai-settings label {
+  display: grid;
+  grid-template-columns: 1fr 5.5rem;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.45rem 0;
+  font-size: 0.8rem;
+}
+
+.ai-settings input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #475569;
+  border-radius: 0.3rem;
+  padding: 0.25rem;
+  background: #0f172a;
+  color: inherit;
+}
+
+.ai-settings small {
+  display: block;
+  margin-top: 0.7rem;
+  color: #cbd5e1;
 }
 
 .track-editor-backdrop {

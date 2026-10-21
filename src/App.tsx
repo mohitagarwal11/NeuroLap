@@ -3,21 +3,66 @@ import { GamepadInput } from "./input/GamepadInput";
 import { KeyboardInput } from "./input/KeyboardInput";
 import { Car } from "./sim/Car";
 import { type Point, Track, TrackState } from "./sim/Track";
+import { TrainingManager, type TrainingStatus } from "./ai/TrainingManager";
+import { defaultTrainingSettings, type TrainingSettings } from "./ai/types";
 import "./App.css";
 
 const editorCloseDistance = 36;
 const editorPrompt = "Draw a loop, then release near the green start marker.";
+const trackStorageKey = "neurolap-track-v1";
+const formatAiTime = (seconds: number | undefined): string =>
+  seconds === undefined ? "--:--.---" :
+    `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed(3).padStart(6, "0")}`;
+const formatAiDelta = (seconds: number | undefined): string =>
+  seconds === undefined ? "--.---" : `${seconds >= 0 ? "+" : "−"}${Math.abs(seconds).toFixed(3)}s`;
+
+const loadSavedTrack = (): Point[] | undefined => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(trackStorageKey) ?? "null") as unknown;
+    if (!Array.isArray(parsed) || parsed.length < 3) return undefined;
+    if (!parsed.every((point) => typeof point === "object" && point !== null && "x" in point && "y" in point && typeof point.x === "number" && typeof point.y === "number")) return undefined;
+    return parsed as Point[];
+  } catch {
+    return undefined;
+  }
+};
+
+const saveTrack = (points: readonly Point[]): void => {
+  try { localStorage.setItem(trackStorageKey, JSON.stringify(points)); } catch { /* storage is optional */ }
+};
 
 function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const editorCanvasRef = useRef<HTMLCanvasElement>(null);
-  const editorOpenRef = useRef(true);
+  const [savedTrack] = useState<Point[] | undefined>(loadSavedTrack);
+  const editorOpenRef = useRef(savedTrack === undefined);
   const editorPointsRef = useRef<Point[]>([]);
   const carRef = useRef<Car | null>(null);
   const acceptTrackRef = useRef<(points: readonly Point[]) => void>(() => {});
-  const [isEditorOpen, setIsEditorOpen] = useState(true);
+  const aiModeRef = useRef(false);
+  const trainingActionsRef = useRef<{
+    start: () => void;
+    pause: () => void;
+    reset: () => void;
+    settings: (settings: TrainingSettings) => void;
+  }>({
+    start: () => {},
+    pause: () => {},
+    reset: () => {},
+    settings: () => {},
+  });
+  const [isEditorOpen, setIsEditorOpen] = useState(savedTrack === undefined);
   const [editorPoints, setEditorPoints] = useState<Point[]>([]);
   const [editorMessage, setEditorMessage] = useState(editorPrompt);
+  const [aiMode, setAiMode] = useState(false);
+  const [trainingStatus, setTrainingStatus] = useState<TrainingStatus | undefined>();
+  const [trainingSettings, setTrainingSettings] = useState<TrainingSettings>(defaultTrainingSettings);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  const setAiControlMode = (enabled: boolean) => {
+    aiModeRef.current = enabled;
+    setAiMode(enabled);
+  };
 
   const clearEditor = () => {
     editorPointsRef.current = [];
@@ -54,9 +99,22 @@ function App() {
     let lastHudUpdate = Number.NEGATIVE_INFINITY;
     let lapStats = track.getLapStats(0);
     let controlSource: "keyboard" | "gamepad" = "keyboard";
+    const training = new TrainingManager();
+    const camera = { x: canvas.clientWidth / 2, y: canvas.clientHeight / 2 };
+    setTrainingSettings(training.settings);
+    if (savedTrack && !track.load(savedTrack)) {
+      try { localStorage.removeItem(trackStorageKey); } catch { /* storage is optional */ }
+      editorOpenRef.current = true;
+      setIsEditorOpen(true);
+    }
 
     const startDriving = () => {
       if (editorOpenRef.current) return;
+      if (aiModeRef.current) {
+        if (track.state === TrackState.READY) track.startDriving();
+        training.start(track, car.width);
+        return;
+      }
       const start = track.startDriving();
       if (!start) return;
       car.reset(start.x, start.y, track.startingAngle());
@@ -65,7 +123,7 @@ function App() {
       if (!editorOpenRef.current && track.restart()) startDriving();
     };
     const gamepad = new GamepadInput((controls) => {
-      if (editorOpenRef.current) return;
+      if (editorOpenRef.current || aiModeRef.current) return;
       if (controls.active) {
         controlSource = "gamepad";
         car.throttle = controls.throttle;
@@ -83,6 +141,7 @@ function App() {
         if (!editorOpenRef.current) gamepad.selectNextGamepad();
       },
       () => {
+        if (aiModeRef.current) return;
         if (editorOpenRef.current) {
           car.throttle = 0;
           car.steer = 0;
@@ -109,9 +168,21 @@ function App() {
     const render = () => {
       const { width, height } = canvas.getBoundingClientRect();
       context.clearRect(0, 0, width, height);
-      context.fillStyle = "#111827";
+      // A muted infield gives the black asphalt and white paint some contrast.
+      context.fillStyle = "#254b35";
       context.fillRect(0, 0, width, height);
+      if (aiModeRef.current) {
+        const focus = training.focusAgent();
+        if (focus) {
+          camera.x += (focus.car.x - camera.x) * 0.08;
+          camera.y += (focus.car.y - camera.y) * 0.08;
+        }
+        context.save();
+        context.translate(width / 2 - camera.x, height / 2 - camera.y);
+      }
       track.draw(context);
+      if (aiModeRef.current) training.draw(context);
+      if (aiModeRef.current) context.restore();
       context.fillStyle = "#e2e8f0";
       context.font = "16px system-ui";
       context.fillText(track.message, 18, 30);
@@ -120,7 +191,7 @@ function App() {
       context.fillText(`Best ${formatLapTime(lapStats.bestLapMs)}`, 18, 102);
       const history = lapStats.lapHistoryMs.slice(-3).map(formatLapTime).join("  ") || "—";
       context.fillText(`Previous ${history}`, 18, 126);
-      if (track.state === TrackState.DRIVING || track.state === TrackState.CRASHED) car.draw(context);
+      if (!aiModeRef.current && (track.state === TrackState.DRIVING || track.state === TrackState.CRASHED)) car.draw(context);
     };
     acceptTrackRef.current = (points) => {
       const bounds = canvas.getBoundingClientRect();
@@ -146,15 +217,40 @@ function App() {
         return;
       }
       track = candidate;
+      saveTrack(scaled);
       lapStats = track.getLapStats(performance.now());
+      if (aiModeRef.current) {
+        track.startDriving();
+        training.reset(track, car.width, false, true, true);
+        training.pause();
+        setTrainingSettings(training.settings);
+        setTrainingStatus(training.status());
+      }
       closeEditor();
+    };
+    trainingActionsRef.current = {
+      start: () => {
+        if (editorOpenRef.current) return;
+        if (track.state === TrackState.READY) track.startDriving();
+        training.start(track, car.width);
+      },
+      pause: () => training.pause(),
+      reset: () => {
+        if (track.state === TrackState.READY) track.startDriving();
+        training.reset(track, car.width, true);
+        training.pause();
+        setTrainingStatus(training.status());
+      },
+      settings: (settings) => training.setSettings(settings),
     };
     const tick = (time: number) => {
       const deltaSeconds = Math.min((time - (previousTime ?? time)) / 1000, 0.1);
       previousTime = time;
       if (!editorOpenRef.current) {
-        gamepad.update();
-        if (track.state === TrackState.DRIVING) {
+        if (!aiModeRef.current) gamepad.update();
+        if (aiModeRef.current) {
+          training.step(track, deltaSeconds);
+        } else if (track.state === TrackState.DRIVING) {
           const previousPosition = { x: car.x, y: car.y };
           car.update(deltaSeconds);
           track.recordRaceProgress(previousPosition, { x: car.x, y: car.y }, car.speed, time);
@@ -162,6 +258,7 @@ function App() {
         }
         if (time - lastHudUpdate >= 250) {
           lapStats = track.getLapStats(time);
+          if (aiModeRef.current) setTrainingStatus(training.status());
           lastHudUpdate = time;
         }
       }
@@ -179,8 +276,9 @@ function App() {
       input.detach();
       acceptTrackRef.current = () => {};
       carRef.current = null;
+      trainingActionsRef.current = { start: () => {}, pause: () => {}, reset: () => {}, settings: () => {} };
     };
-  }, []);
+  }, [savedTrack]);
 
   useEffect(() => {
     const canvas = editorCanvasRef.current;
@@ -250,10 +348,62 @@ function App() {
     acceptTrackRef.current(points);
   };
 
+  const updateTrainingSetting = (key: keyof TrainingSettings, value: number) => {
+    const next = { ...trainingSettings, [key]: value };
+    setTrainingSettings(next);
+    trainingActionsRef.current.settings(next);
+  };
+
   return (
     <main className="game-shell">
       <canvas ref={canvasRef} className="game-canvas" aria-label="Car simulation" />
       <button className="new-track-button" type="button" onClick={openEditor}>New Track</button>
+      <section className="ai-controls" aria-label="AI driver controls">
+        <button type="button" onClick={() => setAiControlMode(!aiMode)}>
+          {aiMode ? "AI Mode" : "Human Mode"}
+        </button> 
+        {aiMode && <>
+          <button type="button" onClick={() => trainingActionsRef.current.start()}>Start</button>
+          <button type="button" onClick={() => trainingActionsRef.current.pause()}>Pause</button>
+          <button type="button" onClick={() => {
+            if (window.confirm("Reset AI training and remove the saved best brain?")) trainingActionsRef.current.reset();
+          }}>Reset</button>
+          <button type="button" aria-label="AI settings" onClick={() => setSettingsOpen(!settingsOpen)}>⚙</button>
+          {trainingStatus && <p>
+            Gen {trainingStatus.generation} · {trainingStatus.alive}/{trainingStatus.population} alive<br />
+            Best {Math.round(trainingStatus.generationBest)} · All-time {Math.round(trainingStatus.bestEver)}<br />
+            Current best {formatAiTime(trainingStatus.generationBestLapSeconds)} · Record {formatAiTime(trainingStatus.bestLapSeconds)}
+            <br />Δ vs record {formatAiDelta(trainingStatus.generationBestDeltaSeconds)}
+            <br />Leader record misses {trainingStatus.leaderRecordMisses}/3
+            {trainingStatus.alive < trainingStatus.population * 0.25 && <><br />Survivor laps {trainingStatus.lowPopulationLaps}/2</>}
+          </p>}
+        </>}
+      </section>
+      {aiMode && settingsOpen && (
+        <aside className="ai-settings" aria-label="AI training settings">
+          <h2>AI settings</h2>
+          {(
+            [
+              ["populationSize", "Population", 5, 100, 1],
+              ["elitePercent", "Elite %", 0.02, 0.5, 0.01],
+              ["mutationRate", "Mutation rate", 0, 1, 0.01],
+              ["mutationStrength", "Mutation strength", 0.01, 2, 0.01],
+              ["crossoverRate", "Crossover rate", 0, 1, 0.01],
+              ["simulationSpeed", "Simulation speed", 0.25, 4, 0.25],
+              ["sensorRange", "Sensor range", 40, 500, 10],
+              ["progressReward", "Progress reward", 0.01, 20, 0.1],
+              ["lapReward", "Lap reward", 10, 10000, 10],
+              ["crashPenalty", "Crash penalty", 0, 1000, 5],
+            ] as const
+          ).map(([key, label, min, max, step]) => (
+            <label key={key}>{label}
+              <input type="number" min={min} max={max} step={step} value={trainingSettings[key]}
+                onChange={(event) => updateTrainingSetting(key, Number(event.target.value))} />
+            </label>
+          ))}
+          <small>Changes apply to the next generation.</small>
+        </aside>
+      )}
       {isEditorOpen && (
         <div className="track-editor-backdrop" role="presentation">
           <section className="track-editor" role="dialog" aria-modal="true" aria-labelledby="track-editor-title">
