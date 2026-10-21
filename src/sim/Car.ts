@@ -50,7 +50,7 @@ export class Car {
 
   // Tires
   readonly tireGrip = 1.9;
-  readonly tireB = 9;
+  readonly tireB = 9; 
   readonly tireC = 1.5;
 
   // Keyboard steering: no speed-sensitive steering lock
@@ -72,8 +72,8 @@ export class Car {
   constructor(
     x: number,
     y: number,
-    width = 1.8 * PIXELS_PER_METER,
-    length = 4.5 * PIXELS_PER_METER,
+    width = 2 * PIXELS_PER_METER,
+    length = 4 * PIXELS_PER_METER,
   ) {
     this.x = x;
     this.y = y;

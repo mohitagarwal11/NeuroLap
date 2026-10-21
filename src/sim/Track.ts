@@ -33,7 +33,7 @@ export class Track {
   private bestLapMs: number | undefined;
 
   constructor(carWidth: number) {
-    this.roadWidth = carWidth * 6;
+    this.roadWidth = carWidth * 7;
   }
 
   begin(x: number, y: number): void {
@@ -116,6 +116,51 @@ export class Track {
 
   getWalls(): { left: readonly WallSegment[]; right: readonly WallSegment[] } {
     return { left: this.leftWalls, right: this.rightWalls };
+  }
+
+  /** The AI reads the same wall geometry used for collision detection. */
+  raycast(origin: Point, angle: number, maxDistance: number): number {
+    const direction = { x: Math.cos(angle), y: Math.sin(angle) };
+    let nearest = maxDistance;
+    for (const wall of [...this.leftWalls, ...this.rightWalls]) {
+      const distance = this.raySegmentDistance(origin, direction, wall);
+      if (distance !== undefined) nearest = Math.min(nearest, distance);
+    }
+    return nearest;
+  }
+
+  /** Distance around the centreline at the closest point to a world position. */
+  progressAt(point: Point): number {
+    if (this.centerline.length < 2) return 0;
+    let bestDistanceSquared = Number.POSITIVE_INFINITY;
+    let bestProgress = 0;
+    let traveled = 0;
+    for (let index = 0; index < this.centerline.length; index += 1) {
+      const from = this.centerline[index];
+      const to = this.centerline[(index + 1) % this.centerline.length];
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const length = Math.hypot(dx, dy);
+      if (length === 0) continue;
+      const projection = Math.max(0, Math.min(1, ((point.x - from.x) * dx + (point.y - from.y) * dy) / (length * length)));
+      const closestX = from.x + dx * projection;
+      const closestY = from.y + dy * projection;
+      const distanceSquared = (point.x - closestX) ** 2 + (point.y - closestY) ** 2;
+      if (distanceSquared < bestDistanceSquared) {
+        bestDistanceSquared = distanceSquared;
+        bestProgress = traveled + projection * length;
+      }
+      traveled += length;
+    }
+    return bestProgress;
+  }
+
+  get length(): number {
+    return this.centerline.length < 2 ? 0 : this.loopLength(this.centerline);
+  }
+
+  get startPoint(): Point | undefined {
+    return this.centerline[0];
   }
 
   restart(): boolean {
@@ -233,15 +278,18 @@ export class Track {
 
   draw(context: CanvasRenderingContext2D): void {
     const line = this.centerline.length > 0 ? this.centerline : this.points;
+    this.drawRoadSurface(context);
     if (line.length > 1) {
       context.beginPath();
       context.moveTo(line[0].x, line[0].y);
       for (let index = 1; index < line.length; index += 1)
         context.lineTo(line[index].x, line[index].y);
       if (this.centerline.length > 0) context.closePath();
-      context.strokeStyle = "#64748b";
+      // The broken white line makes the center of the dark asphalt readable
+      // without changing any of the driving or collision rules.
+      context.strokeStyle = "#f8fafc";
       context.lineWidth = 2;
-      context.setLineDash([8, 8]);
+      context.setLineDash([14, 12]);
       context.stroke();
       context.setLineDash([]);
     }
@@ -251,11 +299,36 @@ export class Track {
     this.drawStartFinishLine(context);
     const start = this.points[0] ?? this.centerline[0];
     if (start) {
-      context.fillStyle = "#4ade80";
+      context.fillStyle = "#facc15";
       context.beginPath();
       context.arc(start.x, start.y, 7, 0, Math.PI * 2);
       context.fill();
     }
+  }
+
+  /** Paint the playable corridor before drawing its road markings. */
+  private drawRoadSurface(context: CanvasRenderingContext2D): void {
+    if (this.centerline.length < 2) return;
+
+    context.beginPath();
+    context.moveTo(this.centerline[0].x, this.centerline[0].y);
+    for (let index = 1; index < this.centerline.length; index += 1)
+      context.lineTo(this.centerline[index].x, this.centerline[index].y);
+    context.closePath();
+
+    // The centreline is continuous, unlike the collision walls which may be
+    // repaired separately around a sharp turn. Drawing the surface from it
+    // prevents gaps or wedges where those repaired boundaries meet.
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    context.strokeStyle = "#4b5563";
+    context.lineWidth = this.roadWidth + 10;
+    context.stroke();
+    context.strokeStyle = "#1b1f24";
+    context.lineWidth = this.roadWidth;
+    context.stroke();
+    context.lineCap = "butt";
+    context.lineJoin = "miter";
   }
 
   private drawWalls(
@@ -263,7 +336,7 @@ export class Track {
     walls: WallSegment[],
   ): void {
     context.strokeStyle = "#f8fafc";
-    context.lineWidth = 4;
+    context.lineWidth = 3;
     for (const wall of walls) {
       context.beginPath();
       context.moveTo(wall.from.x, wall.from.y);
@@ -273,14 +346,35 @@ export class Track {
   }
 
   private drawStartFinishLine(context: CanvasRenderingContext2D): void {
-    if (this.startFinish) {
-      context.strokeStyle = "#f8fafc";
-      context.lineWidth = 6;
-      context.beginPath();
-      context.moveTo(this.startFinish.from.x, this.startFinish.from.y);
-      context.lineTo(this.startFinish.to.x, this.startFinish.to.y);
-      context.stroke();
+    if (!this.startFinish || this.centerline.length < 2) return;
+
+    const { from, to } = this.startFinish;
+    const width = Math.hypot(to.x - from.x, to.y - from.y);
+    const tangent = Math.atan2(
+      this.centerline[1].y - this.centerline[0].y,
+      this.centerline[1].x - this.centerline[0].x,
+    );
+    const columns = 8;
+    const tileWidth = width / columns;
+    const tileLength = 6;
+    const centerX = (from.x + to.x) / 2;
+    const centerY = (from.y + to.y) / 2;
+
+    context.save();
+    context.translate(centerX, centerY);
+    context.rotate(tangent);
+    for (let row = 0; row < 2; row += 1) {
+      for (let column = 0; column < columns; column += 1) {
+        context.fillStyle = (row + column) % 2 === 0 ? "#f8fafc" : "#050505";
+        context.fillRect(
+          -tileLength + row * tileLength,
+          -width / 2 + column * tileWidth,
+          tileLength,
+          tileWidth,
+        );
+      }
     }
+    context.restore();
   }
 
   private pointIsInsideBody(point: Point, corners: readonly Point[]): boolean {
@@ -317,6 +411,24 @@ export class Track {
       point.x - (segment.from.x + dx * projection),
       point.y - (segment.from.y + dy * projection),
     );
+  }
+
+  private raySegmentDistance(
+    origin: Point,
+    direction: Point,
+    segment: WallSegment,
+  ): number | undefined {
+    const edgeX = segment.to.x - segment.from.x;
+    const edgeY = segment.to.y - segment.from.y;
+    const offsetX = segment.from.x - origin.x;
+    const offsetY = segment.from.y - origin.y;
+    const cross = direction.x * edgeY - direction.y * edgeX;
+    if (Math.abs(cross) < 0.000_001) return undefined;
+    const rayDistance = (offsetX * edgeY - offsetY * edgeX) / cross;
+    const segmentPosition = (offsetX * direction.y - offsetY * direction.x) / cross;
+    return rayDistance >= 0 && segmentPosition >= 0 && segmentPosition <= 1
+      ? rayDistance
+      : undefined;
   }
 
   private buildWalls(): boolean {
